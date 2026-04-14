@@ -43,9 +43,14 @@ st.caption("Paste a YouTube URL below to extract the transcript as a downloadabl
 # Anthropic API key — checks Streamlit secrets first, then environment variable
 ANTHROPIC_API_KEY = ""
 try:
-    ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
+    ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"].strip()
 except Exception:
-    ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+    ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+# Debug: show first 10 and last 4 characters of the key
+if ANTHROPIC_API_KEY:
+    masked = ANTHROPIC_API_KEY[:10] + "..." + ANTHROPIC_API_KEY[-4:]
+    st.caption(f"🔑 Key loaded: `{masked}` ({len(ANTHROPIC_API_KEY)} chars)")
 
 
 def generate_summary(transcript: str, title: str) -> str | None:
