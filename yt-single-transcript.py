@@ -41,6 +41,7 @@ st.caption("Paste a YouTube URL below to extract the transcript as a downloadabl
 # ── Helpers ──────────────────────────────────────────────────
 
 # Anthropic API key — checks Streamlit secrets first, then environment variable
+ANTHROPIC_API_KEY = ""
 try:
     ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
 except Exception:
@@ -49,6 +50,9 @@ except Exception:
 
 def generate_summary(transcript: str, title: str) -> str | None:
     """Send the transcript to Claude Haiku for a 200-word summary and 3 key points."""
+    if not ANTHROPIC_API_KEY:
+        st.warning("No Anthropic API key found. Summary skipped.")
+        return None
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         # Send first ~3,000 words for good coverage
@@ -79,7 +83,8 @@ def generate_summary(transcript: str, title: str) -> str | None:
             }],
         )
         return response.content[0].text.strip()
-    except Exception:
+    except Exception as e:
+        st.warning(f"Summary generation failed: {e}")
         return None
 
 def extract_video_id(url: str) -> str | None:
