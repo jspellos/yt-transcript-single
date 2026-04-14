@@ -40,29 +40,41 @@ st.caption("Paste a YouTube URL below to extract the transcript as a downloadabl
 
 # ── Helpers ──────────────────────────────────────────────────
 
-# Anthropic API key — set here or as environment variable ANTHROPIC_API_KEY
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "YOUR_API_KEY_HERE")
+# Anthropic API key — checks Streamlit secrets first, then environment variable
+try:
+    ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
+except Exception:
+    ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 
-def generate_synopsis(transcript: str, title: str) -> str | None:
-    """Send the transcript to Claude Haiku for a 50-word synopsis."""
+def generate_summary(transcript: str, title: str) -> str | None:
+    """Send the transcript to Claude Haiku for a 200-word summary and 3 key points."""
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        # Send first ~2,000 words to keep it fast and cheap
+        # Send first ~3,000 words for good coverage
         words = transcript.split()
-        excerpt = " ".join(words[:2000])
+        excerpt = " ".join(words[:3000])
 
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=150,
+            max_tokens=500,
             messages=[{
                 "role": "user",
                 "content": (
                     f"Here is the transcript of a YouTube video titled \"{title}\".\n\n"
                     f"{excerpt}\n\n"
-                    "Write a synopsis of this video in exactly 50 words. "
-                    "Be specific about what is covered — no filler phrases. "
-                    "Return only the synopsis, nothing else."
+                    "Provide the following:\n\n"
+                    "1. A summary of approximately 200 words. Be specific about what "
+                    "is covered — no filler phrases.\n\n"
+                    "2. Three bullet points reflecting the key takeaways from the video.\n\n"
+                    "Format your response exactly like this:\n\n"
+                    "## Summary\n\n"
+                    "[200-word summary here]\n\n"
+                    "## Key Takeaways\n\n"
+                    "- [first key point]\n"
+                    "- [second key point]\n"
+                    "- [third key point]\n\n"
+                    "Return only the formatted content above, nothing else."
                 ),
             }],
         )
@@ -188,7 +200,7 @@ def vtt_to_plain_text(vtt_path: str) -> str:
     return text.strip()
 
 
-def build_markdown(meta: dict, transcript: str, synopsis: str = None) -> str:
+def build_markdown(meta: dict, transcript: str, summary: str = None) -> str:
     """Assemble the final markdown content."""
     lines = [
         f"# {meta['title']}",
@@ -200,9 +212,9 @@ def build_markdown(meta: dict, transcript: str, synopsis: str = None) -> str:
         f"**URL:** {meta['url']}",
         "",
     ]
-    if synopsis:
+    if summary:
         lines += [
-            f"**Synopsis:** {synopsis}",
+            summary,
             "",
         ]
     lines += [
@@ -247,15 +259,13 @@ if go:
                 if not transcript:
                     st.error("No English captions available for this video. The creator may not have enabled auto-generated subtitles.")
                 else:
-                    # Generate a 50-word synopsis
-                    synopsis = None
-                    if ANTHROPIC_API_KEY and ANTHROPIC_API_KEY != "YOUR_API_KEY_HERE":
-                        with st.spinner("Generating synopsis…"):
-                            synopsis = generate_synopsis(transcript, meta["title"])
-                        if synopsis:
-                            st.info(f"**Synopsis:** {synopsis}")
+                    # Generate summary with key takeaways
+                    summary = None
+                    if ANTHROPIC_API_KEY:
+                        with st.spinner("Generating summary…"):
+                            summary = generate_summary(transcript, meta["title"])
 
-                    md_content = build_markdown(meta, transcript, synopsis)
+                    md_content = build_markdown(meta, transcript, summary)
 
                     # Build a clean filename
                     safe_title = re.sub(r'[<>:"/\\|?*]', "", meta["title"])[:80]
@@ -271,3 +281,7 @@ if go:
 
                     with st.expander("Preview transcript"):
                         st.markdown(md_content)
+
+                    if summary:
+                        with st.expander("Summary"):
+                            st.markdown(summary)
