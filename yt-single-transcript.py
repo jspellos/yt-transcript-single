@@ -47,16 +47,10 @@ try:
 except Exception:
     ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
-# Debug: show first 10 and last 4 characters of the key
-if ANTHROPIC_API_KEY:
-    masked = ANTHROPIC_API_KEY[:10] + "..." + ANTHROPIC_API_KEY[-4:]
-    st.caption(f"🔑 Key loaded: `{masked}` ({len(ANTHROPIC_API_KEY)} chars)")
-
 
 def generate_summary(transcript: str, title: str) -> str | None:
     """Send the transcript to Claude Haiku for a 200-word summary and 3 key points."""
     if not ANTHROPIC_API_KEY:
-        st.warning("No Anthropic API key found. Summary skipped.")
         return None
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -88,8 +82,7 @@ def generate_summary(transcript: str, title: str) -> str | None:
             }],
         )
         return response.content[0].text.strip()
-    except Exception as e:
-        st.warning(f"Summary generation failed: {e}")
+    except Exception:
         return None
 
 def extract_video_id(url: str) -> str | None:
@@ -137,8 +130,7 @@ def fetch_metadata(video_id: str) -> dict | None:
             "view_count": f"{data.get('view_count', 0):,}",
             "url": url,
         }
-    except Exception as e:
-        st.error(f"yt-dlp error: {e}")
+    except Exception:
         return None
 
 
