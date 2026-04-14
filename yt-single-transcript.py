@@ -10,13 +10,13 @@ Setup:
 """
 
 import re
-import subprocess
 import tempfile
 import os
 from datetime import datetime
 
 import streamlit as st
 import anthropic
+import yt_dlp
 
 
 # ── Page config ──────────────────────────────────────────────
@@ -84,25 +84,18 @@ def extract_video_id(url: str) -> str | None:
 
 
 def fetch_metadata(video_id: str) -> dict | None:
-    """Use yt-dlp to grab video metadata (no download)."""
+    """Use yt-dlp Python API to grab video metadata (no download)."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
-        result = subprocess.run(
-            [
-                "python", "-m", "yt_dlp",
-                "--dump-json",
-                "--skip-download",
-                "--no-warnings",
-                url,
-            ],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode != 0:
-            return None
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            data = ydl.extract_info(url, download=False)
 
-        import json
-        data = json.loads(result.stdout)
-        duration_sec = data.get("duration", 0)
+        duration_sec = data.get("duration", 0) or 0
         if duration_sec >= 3600:
             dur = f"{duration_sec // 3600}h {(duration_sec % 3600) // 60}m"
         elif duration_sec >= 60:
@@ -122,30 +115,29 @@ def fetch_metadata(video_id: str) -> dict | None:
             "view_count": f"{data.get('view_count', 0):,}",
             "url": url,
         }
-    except Exception:
+    except Exception as e:
+        st.error(f"yt-dlp error: {e}")
         return None
 
 
 def fetch_transcript(video_id: str) -> str | None:
-    """Use yt-dlp to download auto-generated captions and return clean text."""
+    """Use yt-dlp Python API to download auto-generated captions and return clean text."""
     url = f"https://www.youtube.com/watch?v={video_id}"
 
     with tempfile.TemporaryDirectory() as tmp:
         out_template = os.path.join(tmp, "subs")
         try:
-            result = subprocess.run(
-                [
-                    "python", "-m", "yt_dlp",
-                    "--write-auto-sub",
-                    "--sub-lang", "en",
-                    "--skip-download",
-                    "--sub-format", "vtt",
-                    "--no-warnings",
-                    "-o", out_template,
-                    url,
-                ],
-                capture_output=True, text=True, timeout=60,
-            )
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "writeautomaticsub": True,
+                "subtitleslangs": ["en"],
+                "subtitlesformat": "vtt",
+                "outtmpl": out_template,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
 
             # Find the VTT file
             vtt_path = None
@@ -159,8 +151,6 @@ def fetch_transcript(video_id: str) -> str | None:
 
             return vtt_to_plain_text(vtt_path)
 
-        except subprocess.TimeoutExpired:
-            return None
         except Exception:
             return None
 
