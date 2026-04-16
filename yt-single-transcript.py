@@ -1,8 +1,9 @@
 """
 YouTube Transcript Grabber — Streamlit App
 ============================================
-Paste a YouTube URL, get a downloadable markdown transcript.
-Uses yt-dlp for both metadata and captions — no API key needed.
+Paste a YouTube URL, get a downloadable markdown transcript,
+a 200-word summary with key takeaways, and an interactive
+chat session to ask questions about the video content.
 
 Setup:
   pip install streamlit yt-dlp anthropic
@@ -38,9 +39,7 @@ st.title("🎬 YouTube Transcript Grabber")
 st.caption("Paste a YouTube URL below to extract the transcript as a downloadable markdown file.")
 
 
-# ── Helpers ──────────────────────────────────────────────────
-
-# Anthropic API key — checks Streamlit secrets first, then environment variable
+# ── API key ──────────────────────────────────────────────────
 ANTHROPIC_API_KEY = ""
 try:
     ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"].strip()
@@ -48,13 +47,27 @@ except Exception:
     ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
 
+# ── Session state defaults ───────────────────────────────────
+for key, default in {
+    "meta": None,
+    "transcript": None,
+    "summary": None,
+    "md_content": None,
+    "filename": None,
+    "chat_history": [],
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+
+# ── Helpers ──────────────────────────────────────────────────
+
 def generate_summary(transcript: str, title: str) -> str | None:
     """Send the transcript to Claude Haiku for a 200-word summary and 3 key points."""
     if not ANTHROPIC_API_KEY:
         return None
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        # Send first ~3,000 words for good coverage
         words = transcript.split()
         excerpt = " ".join(words[:3000])
 
@@ -84,6 +97,37 @@ def generate_summary(transcript: str, title: str) -> str | None:
         return response.content[0].text.strip()
     except Exception:
         return None
+
+
+def chat_with_transcript(user_message: str, transcript: str, title: str, history: list) -> str:
+    """Send a chat message with the transcript as context."""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+    # Keep first ~4,000 words of transcript for context
+    words = transcript.split()
+    excerpt = " ".join(words[:4000])
+
+    system_prompt = (
+        f"You are a helpful assistant answering questions about a YouTube video "
+        f"titled \"{title}\". Here is the transcript:\n\n{excerpt}\n\n"
+        "Answer based on the transcript content. Be concise and specific. "
+        "If the transcript doesn't cover what the user is asking about, say so."
+    )
+
+    # Build messages from chat history
+    messages = []
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": user_message})
+
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1000,
+        system=system_prompt,
+        messages=messages,
+    )
+    return response.content[0].text.strip()
+
 
 def extract_video_id(url: str) -> str | None:
     """Pull the video ID from various YouTube URL formats."""
@@ -153,7 +197,6 @@ def fetch_transcript(video_id: str) -> str | None:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
 
-            # Find the VTT file
             vtt_path = None
             for f in os.listdir(tmp):
                 if f.endswith(".vtt"):
@@ -174,16 +217,12 @@ def vtt_to_plain_text(vtt_path: str) -> str:
     with open(vtt_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Remove VTT header
     content = re.sub(r"WEBVTT\n.*?\n\n", "", content, flags=re.DOTALL)
-    # Remove timestamp lines
     content = re.sub(
         r"\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*\n", "", content
     )
-    # Remove markup tags
     content = re.sub(r"<[^>]+>", "", content)
 
-    # De-duplicate overlapping caption lines
     seen = set()
     unique = []
     for line in content.split("\n"):
@@ -192,7 +231,6 @@ def vtt_to_plain_text(vtt_path: str) -> str:
             seen.add(stripped)
             unique.append(stripped)
 
-    # Group into paragraphs (~10 lines each)
     text = ""
     for i, line in enumerate(unique):
         text += line + " "
@@ -215,10 +253,7 @@ def build_markdown(meta: dict, transcript: str, summary: str = None) -> str:
         "",
     ]
     if summary:
-        lines += [
-            summary,
-            "",
-        ]
+        lines += [summary, ""]
     lines += [
         "---",
         "",
@@ -229,7 +264,7 @@ def build_markdown(meta: dict, transcript: str, summary: str = None) -> str:
     return "\n".join(lines)
 
 
-# ── UI ───────────────────────────────────────────────────────
+# ── UI: URL input and transcript fetch ───────────────────────
 
 url_input = st.text_input(
     "YouTube URL",
@@ -239,51 +274,97 @@ url_input = st.text_input(
 
 go = st.button("Get Transcript", type="primary", use_container_width=True)
 
-if go:
-    if not url_input.strip():
-        st.error("Please paste a YouTube URL above.")
+if go and url_input.strip():
+    video_id = extract_video_id(url_input)
+    if not video_id:
+        st.error("That doesn't look like a valid YouTube URL. Check the link and try again.")
     else:
-        video_id = extract_video_id(url_input)
-        if not video_id:
-            st.error("That doesn't look like a valid YouTube URL. Check the link and try again.")
+        with st.spinner("Fetching video info…"):
+            meta = fetch_metadata(video_id)
+
+        if not meta:
+            st.error("Couldn't retrieve video details. The video may be private, age-restricted, or the URL may be incorrect.")
         else:
-            with st.spinner("Fetching video info…"):
-                meta = fetch_metadata(video_id)
+            with st.spinner("Extracting transcript — this may take a moment…"):
+                transcript = fetch_transcript(video_id)
 
-            if not meta:
-                st.error("Couldn't retrieve video details. The video may be private, age-restricted, or the URL may be incorrect.")
+            if not transcript:
+                st.error("No English captions available for this video. The creator may not have enabled auto-generated subtitles.")
             else:
-                st.success(f"**{meta['title']}**  \n{meta['channel']}  ·  {meta['duration']}  ·  {meta['view_count']} views")
+                summary = None
+                if ANTHROPIC_API_KEY:
+                    with st.spinner("Generating summary…"):
+                        summary = generate_summary(transcript, meta["title"])
 
-                with st.spinner("Extracting transcript — this may take a moment…"):
-                    transcript = fetch_transcript(video_id)
+                md_content = build_markdown(meta, transcript, summary)
+                safe_title = re.sub(r'[<>:"/\\|?*]', "", meta["title"])[:80]
+                filename = f"{meta['upload_date']}_{meta['channel']}_{safe_title}.md"
 
-                if not transcript:
-                    st.error("No English captions available for this video. The creator may not have enabled auto-generated subtitles.")
-                else:
-                    # Generate summary with key takeaways
-                    summary = None
-                    if ANTHROPIC_API_KEY:
-                        with st.spinner("Generating summary…"):
-                            summary = generate_summary(transcript, meta["title"])
+                # Store everything in session state
+                st.session_state.meta = meta
+                st.session_state.transcript = transcript
+                st.session_state.summary = summary
+                st.session_state.md_content = md_content
+                st.session_state.filename = filename
+                st.session_state.chat_history = []
 
-                    md_content = build_markdown(meta, transcript, summary)
+elif go:
+    st.error("Please paste a YouTube URL above.")
 
-                    # Build a clean filename
-                    safe_title = re.sub(r'[<>:"/\\|?*]', "", meta["title"])[:80]
-                    filename = f"{meta['upload_date']}_{meta['channel']}_{safe_title}.md"
 
-                    st.download_button(
-                        label="⬇️  Download Transcript (.md)",
-                        data=md_content,
-                        file_name=filename,
-                        mime="text/markdown",
-                        use_container_width=True,
-                    )
+# ── UI: Results (persisted via session state) ────────────────
 
-                    with st.expander("Preview transcript"):
-                        st.markdown(md_content)
+if st.session_state.meta and st.session_state.transcript:
+    meta = st.session_state.meta
+    st.success(f"**{meta['title']}**  \n{meta['channel']}  ·  {meta['duration']}  ·  {meta['view_count']} views")
 
-                    if summary:
-                        with st.expander("Summary"):
-                            st.markdown(summary)
+    st.download_button(
+        label="⬇️  Download Transcript (.md)",
+        data=st.session_state.md_content,
+        file_name=st.session_state.filename,
+        mime="text/markdown",
+        use_container_width=True,
+    )
+
+    with st.expander("Preview transcript"):
+        st.markdown(st.session_state.md_content)
+
+    if st.session_state.summary:
+        with st.expander("Summary"):
+            st.markdown(st.session_state.summary)
+
+    # ── Chat interface ───────────────────────────────────────
+    if ANTHROPIC_API_KEY:
+        st.divider()
+        st.subheader("💬 Chat with this video")
+        st.caption("Ask questions about the video content — the full transcript is used as context.")
+
+        # Display chat history
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        # Chat input
+        if user_input := st.chat_input("Ask something about this video…"):
+            # Show user message
+            with st.chat_message("user"):
+                st.markdown(user_input)
+
+            # Get assistant response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking…"):
+                    try:
+                        response = chat_with_transcript(
+                            user_input,
+                            st.session_state.transcript,
+                            st.session_state.meta["title"],
+                            st.session_state.chat_history,
+                        )
+                        st.markdown(response)
+                    except Exception as e:
+                        response = f"Sorry, something went wrong: {e}"
+                        st.error(response)
+
+            # Save to history
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
